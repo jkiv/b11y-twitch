@@ -1,0 +1,6 @@
+[example]
+irc_token='oauth:'
+client_id=''
+nick=''
+prefix=''
+initial_channels=['']
