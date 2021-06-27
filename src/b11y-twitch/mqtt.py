@@ -2,8 +2,9 @@ import asyncio
 import paho.mqtt.client as mqtt
 
 def _on_connect(client, userdata, flags, rc, subscriptions):
-    print(f'Connected with result code {rc}', flush=True)
+    print(f'Connected to MQTT ({rc=})...', flush=True)
     for topic in subscriptions:
+        print(f'Subscribing to MQTT topic \'{topic}\'')
         client.subscribe(topic)
 
 def _on_message(client, userdata, msg, queue):
@@ -11,6 +12,12 @@ def _on_message(client, userdata, msg, queue):
     queue.put_nowait((msg.topic, msg.payload,))
 
 class MQTTBridge:
+    '''\
+    Handles sending and receiving MQTT messages from MQTT server.
+
+    Uses two internal asyncio.Queue's to store incoming and outgoing MQTT
+    messages.
+    '''
 
     def __init__(self, in_queue, out_queue, subscriptions, client=None):
 
@@ -23,6 +30,7 @@ class MQTTBridge:
         self.out_queue = out_queue
         self.subscriptions = subscriptions
 
+        # Wrap extended callbacks to capture extra parameters
         def _on_connect_closure(client, userdata, flags, rc):
             return _on_connect(client, userdata, flags, rc, self.subscriptions)
 
@@ -32,7 +40,7 @@ class MQTTBridge:
         self.client.on_connect = _on_connect_closure
         self.client.on_message = _on_message_closure
 
-    async def _handle_messages_forever(self):
+    async def _send_messages_forever(self):
         
         loop = asyncio.get_running_loop()
 
@@ -48,6 +56,7 @@ class MQTTBridge:
             self.out_queue.task_done()
 
     async def _loop_forever(self):
+
         def _blocking_loop(client):
             return client.loop()
 
@@ -56,8 +65,19 @@ class MQTTBridge:
         while loop.is_running():
             await loop.run_in_executor(None, _blocking_loop, self.client) 
 
+    def connect(self, host, port, timeout, username=None, password=None, blocking=True):
+
+        if username is not None or password is not None:
+            self.client.username_pw_set(username=username, password=password)
+
+        if not blocking: 
+            # FIXME doesn't work?
+            self.client.connect_async(host, port, timeout)
+        else:
+            self.client.connect(host, port, timeout)
+
     async def run(self):
         await asyncio.gather(
-            self._handle_messages_forever(),
+            self._send_messages_forever(),
             self._loop_forever()
         )
