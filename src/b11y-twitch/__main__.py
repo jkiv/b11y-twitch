@@ -1,14 +1,15 @@
 import asyncio
 import os
-import paho.mqtt.client as mqtt
 import toml
 from twitchio.ext import commands
 
+from . import mqtt
+
 class Bot(commands.Bot):
 
-    def __init__(self, read_queue, write_queue, **config):
-        self._read_queue = read_queue
-        self._write_queue = write_queue
+    def __init__(self, in_queue, out_queue, **config):
+        self._in_queue = in_queue
+        self._out_queue = out_queue
         self._config = config
 
         self._mods_only = True
@@ -53,50 +54,30 @@ class Bot(commands.Bot):
             print(f'Malformed !mqtt command: {ctx.message.content}', flush=True)
             return # Malformed command
 
-        print(f'mqtt_echo: Enqueueing \'[{timestamp}] {user}: {topic=}, {payload=}\'', flush=True)
-        await self._write_queue.put((topic, payload))
+        print(f'Enqueueing \'{topic=}, {payload=}\' from {user} @ {timestamp}', flush=True)
 
-async def _handle_twitch_to_mqtt_forever(mqtt_client, read_queue):
+        self._out_queue.put_nowait((topic, payload,))
+
+async def _handle_mqtt_to_twitch_forever(twitch_client, queue, channel_name):
     loop = asyncio.get_running_loop()
 
     while loop.is_running():
-        # Publish messages from read_queue
-        topic, message = await read_queue.get()
-        print(f'Publishing MQTT message: {topic=}, {message=}', flush=True)
-        mqtt_client.publish(topic, message)
-        read_queue.task_done()
+        try:
+            topic, payload = await asyncio.wait_for(queue.get(), 1)
+        except asyncio.TimeoutError:
+            continue
 
-def on_mqtt_connect_cb(client, userdata, flags, rc):
-    print(f'Connected with result code {rc}', flush=True)
-    client.subscribe('b11y/dev/*')
-
-def on_mqtt_message_cb(client, userdata, msg, write_queue):
-    print(f'MQTT message received: {msg.topic}: {msg.payload}', flush=True)
-    write_queue.put_nowait((msg.topic, msg.payload,))
-
-async def _handle_mqtt_to_twitch_forever(twitch_client, read_queue):
-    loop = asyncio.get_running_loop()
-
-    while loop.is_running():
-        topic, payload = await read_queue.get()
         print(f'Pulled MQTT payload off internal queue: {topic=}, {payload=}', flush=True)
 
-        channel = twitch_client.get_channel('jkiv')
+        channel = twitch_client.get_channel(channel_name)
         await channel.send(f'<mqtt> {topic=}, {payload=}')
 
-        read_queue.task_done()
-    
-async def _mqtt_loop(mqtt_client):
-
-    def _blocking_loop(mqtt_client):
-        return mqtt_client.loop()
-
-    loop = asyncio.get_running_loop()
-
-    while loop.is_running():
-        await loop.run_in_executor(None, _blocking_loop, mqtt_client)
+        queue.task_done()
 
 async def main(config):
+
+    twitch_config = config['twitch']
+    mqtt_config = config['mqtt']
 
     loop = asyncio.get_running_loop()
 
@@ -105,23 +86,25 @@ async def main(config):
     mqtt_to_twitch_queue = asyncio.Queue()
 
     # Set up TwitchIO client
-    twitch_client = Bot(mqtt_to_twitch_queue, twitch_to_mqtt_queue, loop=loop, **config)
+    twitch_client = Bot(mqtt_to_twitch_queue, twitch_to_mqtt_queue, loop=loop, **twitch_config)
 
     # Set up MQTT client
-    # TODO config['mqtt_username'], config['mqtt_password'], ...
-    mqtt_client = mqtt.Client()
-    mqtt_client.on_connect = on_mqtt_connect_cb
-    mqtt_client.on_message = lambda client, userdata, message: on_mqtt_message_cb(client, userdata, message, mqtt_to_twitch_queue)
-    mqtt_client.username_pw_set(username='mqtt_anonymous', password='mqtt_anonymous')
-    mqtt_client.connect('localhost', 1883, 60)
+    mqtt_bridge = mqtt.MQTTBridge(mqtt_to_twitch_queue, twitch_to_mqtt_queue, mqtt_config['subscriptions'])
+
+    # TODO maybe make this part of the MessageBridge API?
+    mqtt_client = mqtt_bridge.client
+    mqtt_client.username_pw_set(username=mqtt_config['username'], password=mqtt_config['password'])
+    mqtt_client.connect(mqtt_config['host'], mqtt_config['port'], mqtt_config['timeout'])
 
     try:
-        await asyncio.gather(
-            _handle_twitch_to_mqtt_forever(mqtt_client, twitch_to_mqtt_queue),
-            _handle_mqtt_to_twitch_forever(twitch_client, mqtt_to_twitch_queue),
-            _mqtt_loop(mqtt_client),
+        tasks = await asyncio.gather(
+            mqtt_bridge.run(),
+            # TODO for each channel in twitch_config['initial_channels']
+            _handle_mqtt_to_twitch_forever(twitch_client, mqtt_to_twitch_queue, twitch_config['initial_channels'][0]),
             twitch_client.start()
         )
+        
+        tasks.cancel()
     except Exception as e:
         print(f'Exception: {e!r}', flush=True)
         loop.stop()
@@ -133,10 +116,7 @@ if __name__ == '__main__':
     config_path = os.path.abspath(os.path.expanduser(config_path))
 
     with open(config_path, 'r') as f:
-        config_all = toml.load(f)
+        config = toml.load(f)
 
-    # Get first section in config.toml as configuration
-    config = config_all[next(iter(config_all))]
-
-    # Make rocket go now
+    # Run
     asyncio.run(main(config))
