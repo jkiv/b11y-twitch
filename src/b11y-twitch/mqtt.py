@@ -1,16 +1,6 @@
 import asyncio
 import paho.mqtt.client as mqtt
 
-def _on_connect(client, userdata, flags, rc, subscriptions):
-    print(f'Connected to MQTT ({rc=})...', flush=True)
-    for topic in subscriptions:
-        print(f'Subscribing to MQTT topic \'{topic}\'')
-        client.subscribe(topic)
-
-def _on_message(client, userdata, msg, queue):
-    print(f'MQTT message received: {msg.topic}: {msg.payload}', flush=True)
-    queue.put_nowait((msg.topic, msg.payload,))
-
 class MQTTBridge:
     '''\
     Handles sending and receiving MQTT messages from MQTT server.
@@ -19,43 +9,64 @@ class MQTTBridge:
     messages.
     '''
 
-    def __init__(self, in_queue, out_queue, subscriptions, client=None):
+    def __init__(self, initial_subscriptions, mqtt_client=None):
 
-        if client is None:
+        if mqtt_client is None:
             self.client = mqtt.Client()
         else:
-            self.client = client
+            self.client = mqtt_client
 
-        self.in_queue = in_queue
-        self.out_queue = out_queue
-        self.subscriptions = subscriptions
+        self.in_queue = asyncio.Queue()
+        self.out_queue = asyncio.Queue()
+        self.subscriptions = initial_subscriptions # TODO refactor for appending prefix
 
-        # Wrap extended callbacks to capture extra parameters
         def _on_connect_closure(client, userdata, flags, rc):
-            return _on_connect(client, userdata, flags, rc, self.subscriptions)
+            print(f'Connected to MQTT ({rc=})...', flush=True)
+            for topic in self.subscriptions:
+                print(f'Subscribing to MQTT topic \'{topic}\'', flush=True)
+                client.subscribe(topic)
 
         def _on_message_closure(client, userdata, message):
-            return _on_message(client, userdata, message, self.in_queue)
+            print(f'MQTT message received: {message.topic}: {message.payload}', flush=True)
+            self.in_queue.put_nowait((message.topic, message.payload,))
 
         self.client.on_connect = _on_connect_closure
         self.client.on_message = _on_message_closure
 
-    async def _send_messages_forever(self):
+    def subscribe(self, topic):
+        print(f'Subscribing to MQTT topic \'{topic}\'', flush=True)
+        self.subscriptions.append(topic)
+        self.client.subscribe(topic)
+
+    def unsubscribe(self, topic):
+        if topic in self.subscriptions:
+            print(f'Unubscribing from MQTT topic \'{topic}\'', flush=True)
+            self.subscriptions.remove(topic)
+
+        self.client.unsubscribe(topic)
+
+    async def put(self, topic, payload):
+        print(f'Enqueueing: {topic=}, {payload=}')
+        await self.out_queue.put((topic, payload,))
+
+    async def get(self):
+        topic, payload = await self.in_queue.get()
+        print(f'Dequeueing: {topic=}, {payload=}', flush=True)
+        return (topic, payload,)
+
+    async def publish_messages_forever(self):
         
         loop = asyncio.get_running_loop()
 
         while loop.is_running():
-            try:
-                topic, message = await self.out_queue.get()
-            except asyncio.TimeoutError:
-                continue
+            topic, payload = await self.out_queue.get()
 
-            print(f'Publishing MQTT message: {topic=}, {message=}', flush=True)
+            print(f'Publishing MQTT message: {topic=}, {payload=}', flush=True)
 
-            self.client.publish(topic, message)
+            self.client.publish(topic, payload)
             self.out_queue.task_done()
 
-    async def _loop_forever(self):
+    async def loop_forever(self):
 
         def _blocking_loop(client):
             return client.loop()
@@ -76,8 +87,11 @@ class MQTTBridge:
         else:
             self.client.connect(host, port, timeout)
 
-    async def run(self):
-        await asyncio.gather(
-            self._send_messages_forever(),
-            self._loop_forever()
-        )
+# TODO topic_add_prefix(topic, prefix)
+def concat_topic(prefix, topic):
+    # TODO more robust method
+    # TODO check actual format for topics
+    prefix.rstrip('/')
+    return prefix + '/' + topic
+
+# TODO topic_remove_prefix(topic, prefix)

@@ -1,94 +1,69 @@
 import asyncio
 import os
 import toml
-from twitchio.ext import commands
 
 from . import mqtt
+from . import b11y
 
-class Bot(commands.Bot):
+class Bot(b11y.B11yBase):
 
-    def __init__(self, in_queue, out_queue, **config):
-        self._in_queue = in_queue
-        self._out_queue = out_queue
-        self._config = config
-        self._channels = config['channels']
+    def __init__(self, twitch_client, mqtt_bridge, topic_prefix=None):
+        super().__init__(twitch_client, mqtt_bridge)
 
-        super().__init__(
-            irc_token=config['irc_token'],
-            client_id=config['client_id'],
-            nick=config['nick'],
-            prefix=config['prefix'],
-            initial_channels=config['channels']
-        )
+        self.topic_prefix = topic_prefix
 
-        # Clear secrets in config for good measure
-        self._config['irc_token'] = '***' if 'irc_token' in self._config and self._config['irc_token'] else '(empty)'
-        self._config['client_id'] = '***' if 'client_id' in self._config and self._config['client_id'] else '(empty)'
+        self.add_twitch_command_handler('ping', self.twitch_ping)
+        self.add_twitch_command_handler('mqttping', self.twitch_mqttping)
 
-    async def event_ready(self):
-        nick = self.nick
-        print(f'Connected to Twitch ({nick=})...', flush=True)
+        self.add_topic_handler('pong', self.mqtt_pong, topic_prefix=topic_prefix)
 
-    async def event_message(self, message):
-        print(f'[{message.timestamp}] {message.author.name}: {message.content}', flush=True)
+    async def twitch_ping(self, ctx):
+        '''\
+        Simple ping/pong command.
+        '''
+        await ctx.send(f'@{ctx.author.name} pong!')
 
-        # TODO per-command access list
-        if message.author.is_mod:
-            await self.handle_commands(message)
-
-    @commands.command(name='ping')
-    async def ping(self, ctx):
-        await ctx.send(f'pong @{ctx.author.name}!')
-
-    @commands.command(name='mqtt')
-    async def arbitrary_mqtt(self, ctx):
-        timestamp = ctx.message.timestamp
+    async def twitch_mqttping(self, ctx):
+        '''\
+        Ping/pong using MQTT server.
+        '''
+        channel = ctx.channel.name
         user = ctx.message.author.name
 
-        try:
-            _, topic, payload = ctx.message.content.split(' ', 2)
-        except:
-            print(f'Malformed !mqtt command: {ctx.message.content}', flush=True)
-            return # Malformed command
+        print(f'MQTT ping command from {user} in {channel}', flush=True)
 
-        print(f'Enqueueing \'{topic=}, {payload=}\' from {user} @ {timestamp}', flush=True)
+        topic = 'pong'
 
-        self._out_queue.put_nowait((topic, payload,))
+        if self.topic_prefix is not None:
+            topic = mqtt.concat_topic(self.topic_prefix, topic)
 
-    async def dispatch_mqtt(self):
-        loop = asyncio.get_running_loop()
-
-        while loop.is_running():
-            try:
-                topic, payload = await asyncio.wait_for(self._in_queue.get(), 1)
-            except asyncio.TimeoutError:
-                continue
+        await self._mqtt.put(topic, f'{channel} {user}')
     
-            print(f'Pulled MQTT payload off internal queue: {topic=}, {payload=}', flush=True)
+    async def mqtt_pong(self, topic, payload):
+        '''\
+        Handle receiving "pong" message from MQTT server.
+        '''
 
-            # TODO dispatch MQTT message to topic handler
-            for channel_name in self._channels:
-                channel = self.get_channel(channel_name)
-                await channel.send(f'MQTT message received: {topic=}, {payload=}')
-    
-            self._in_queue.task_done()
+        payload = payload.decode('utf-8')
+        channel_name, author = payload.split(' ', 1)
+
+        print(f'Handling {topic}, {author} in {channel_name}', flush=True)
+
+        channel = self._twitch.get_channel(channel_name)
+        await channel.send(f'@{author} pong!')
 
 async def main(config):
 
-    twitch_config = config['twitch']
-    mqtt_config = config['mqtt']
+    twitch_config = config['twitch'] # TODO update base config
+    mqtt_config   = config['mqtt']   # TODO update base config
 
     loop = asyncio.get_running_loop()
 
-    # Set up internal message queues
-    twitch_to_mqtt_queue = asyncio.Queue()
-    mqtt_to_twitch_queue = asyncio.Queue()
-
     # Set up TwitchIO client
-    twitch_client = Bot(mqtt_to_twitch_queue, twitch_to_mqtt_queue, loop=loop, **twitch_config)
+    twitch_client = b11y.B11yTwitchBot(loop=loop, **twitch_config)
 
-    # Set up MQTT client
-    mqtt_bridge = mqtt.MQTTBridge(mqtt_to_twitch_queue, twitch_to_mqtt_queue, mqtt_config['subscriptions'])
+    # Set up MQTT bridge
+    mqtt_bridge = mqtt.MQTTBridge(mqtt_config['subscriptions'])
 
     mqtt_bridge.connect(
         mqtt_config['host'],
@@ -98,12 +73,11 @@ async def main(config):
         mqtt_config['password']
     )
 
+    # Set up bot
+    bot = Bot(twitch_client, mqtt_bridge, topic_prefix=mqtt_config['topic_prefix'])
+
     try:
-        await asyncio.gather(
-            mqtt_bridge.run(),
-            twitch_client.dispatch_mqtt(),
-            twitch_client.start()
-        )
+        await bot.run()
     except Exception as e:
         print(f'Exception: {e!r}', flush=True)
         loop.stop()
