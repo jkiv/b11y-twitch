@@ -9,6 +9,8 @@ class B11yTwitchBot(commands.Bot):
         self.config = config
         self.channels = config['channels']
 
+        self.mods_only = True # TODO proper access control
+
         super().__init__(
             irc_token=config['irc_token'],
             client_id=config['client_id'],
@@ -48,7 +50,7 @@ class B11yBase:
         mod_status = '[M] ' if message.author.is_mod else ''
         print(f'[{message.timestamp}] {mod_status}{message.author.name}: {message.content}', flush=True)
 
-        if message.author.is_mod:
+        if not self.mods_only or message.author.is_mod:
             await self._twitch.handle_commands(message)
 
     async def _dispatch_topic_message(self, topic, payload):

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import toml
 
@@ -12,10 +13,24 @@ class Bot(b11y.B11yBase):
 
         self.topic_prefix = topic_prefix
 
-        self.add_twitch_command_handler('ping', self.twitch_ping)
-        self.add_twitch_command_handler('mqttping', self.twitch_mqttping)
+        # DANGER DANGER DANGER
+        #self.mods_only = False
 
+        # !ping
+        self.add_twitch_command_handler('ping', self.twitch_ping)
+
+        # !mqttping
+        self.add_twitch_command_handler('mqttping', self.twitch_mqttping)
         self.add_topic_handler('pong', self.mqtt_pong, topic_prefix=topic_prefix)
+
+        # !jperdy, !j
+        self.add_twitch_command_handler('jperdy', self.twitch_j_start)
+        self.add_twitch_command_handler('j', self.twitch_j_guess)
+
+        # !mqtt
+        self.add_twitch_command_handler('mqtt', self.twitch_arb_mqtt)
+
+    # Twitch Handlers
 
     async def twitch_ping(self, ctx):
         '''\
@@ -39,6 +54,54 @@ class Bot(b11y.B11yBase):
 
         await self._mqtt.put(topic, f'{channel} {user}')
     
+    # ... jperdy
+    async def twitch_j_start(self, ctx):
+        '''\
+        Handle starting a jperdy round.
+        '''
+        channel = ctx.channel.name
+        username = ctx.message.author.name
+
+        print(f'{username} wants to start a round of jperdy in {channel}', flush=True)
+
+        topic = 'b11y/j/start_round'
+        payload = json.dumps({'channel': channel, 'username': username})
+
+        await self._mqtt.put(topic, payload)
+
+    async def twitch_j_guess(self, ctx):
+        '''\
+        Handle guessing during jperdy round.
+        '''
+        channel = ctx.channel.name
+        username = ctx.message.author.name
+
+        _, guess = ctx.message.content.split(' ', 1)
+
+        print(f'{username} in {channel} guessed \'{guess}.\'', flush=True)
+
+        topic = 'b11y/j/guess'
+        payload = json.dumps({'channel': channel, 'username': username, 'guess': guess})
+
+        await self._mqtt.put(topic, payload)
+
+    # FIXME testing only, mod only
+    async def twitch_arb_mqtt(self, ctx):
+        '''\
+        Handle sending arbitrary message to MQTT server.
+        '''
+        channel = ctx.channel.name
+        user = ctx.message.author.name
+
+        _, topic, payload = ctx.message.content.split(' ', 2)
+
+        print(f'Arbitrary MQTT message from {user} in {channel}:\n{topic=}\n{payload=}', flush=True)
+
+        await self._mqtt.put(topic, payload)
+
+
+    # MQTT Handlers
+
     async def mqtt_pong(self, topic, payload):
         '''\
         Handle receiving "pong" message from MQTT server.
