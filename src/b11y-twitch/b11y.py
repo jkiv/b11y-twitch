@@ -36,7 +36,7 @@ class B11yBase:
         self._twitch = twitch_client
         self._mqtt = mqtt_bridge
 
-        self.mods_only = False
+        self.mods_only = True # Safe default
 
         self._topic_handlers = {}
         # twitch_client manages twitch handlers
