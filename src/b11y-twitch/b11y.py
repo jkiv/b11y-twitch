@@ -1,4 +1,3 @@
-
 import asyncio
 from twitchio.ext import commands
 
@@ -58,7 +57,13 @@ class B11yBase:
     async def _dispatch_topic_message(self, topic, payload):
         if topic in self._topic_handlers:
             print(f'Dispatching handler for {topic=}.', flush=True)
-            await self._topic_handlers[topic](topic, payload)
+
+            try:
+                await self._topic_handlers[topic](topic, payload)
+            except Exception as e:
+                print(f'Error during dispatch of MQTT handler \'{self._topic_handlers[topic]}\' for {topic=}, {payload=}:', flush=True)
+                print(e, flush=True)
+            
         else:
             known_topics = ', '.join(self._topic_handlers.keys())
             print(f'Unhandled topic {topic}. Known topics: {known_topics}', flush=True)
@@ -87,7 +92,7 @@ class B11yBase:
         if topic_prefix is not None:
             topic = mqtt.concat_topic(topic_prefix, topic)
         
-        if topic in self._mqtt_handlers:
+        if topic in self._topic_handlers:
             del self._topic_handlers[topic]
         
         self._mqtt.unsubscribe(topic)

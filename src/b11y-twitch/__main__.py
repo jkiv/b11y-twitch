@@ -24,7 +24,7 @@ class Bot(b11y.B11yBase):
         self.add_topic_handler('pong', self.mqtt_pong, topic_prefix=topic_prefix)
 
         # !jperdy, !j
-        self.add_twitch_command_handler('jperdy', self.twitch_j_start)
+        self.add_twitch_command_handler('jperdy', self.twitch_j_start_round)
         self.add_twitch_command_handler('j', self.twitch_j_guess)
 
         # !mqtt
@@ -55,7 +55,7 @@ class Bot(b11y.B11yBase):
         await self._mqtt.put(topic, f'{channel} {user}')
     
     # ... jperdy
-    async def twitch_j_start(self, ctx):
+    async def twitch_j_start_round(self, ctx):
         '''\
         Handle starting a jperdy round.
         '''
@@ -64,7 +64,13 @@ class Bot(b11y.B11yBase):
 
         print(f'{username} wants to start a round of jperdy in {channel}', flush=True)
 
-        topic = 'b11y/j/start_round'
+        # Add topic handler for `round_started`
+        self.add_topic_handler(f'j/{channel}/round_started', self.mqtt_j_round_started, topic_prefix=self.topic_prefix)
+        
+        # Add topic handler for `end_round`
+        self.add_topic_handler(f'j/{channel}/end_round', self.mqtt_j_end_round, topic_prefix=self.topic_prefix)
+
+        topic = mqtt.concat_topic(self.topic_prefix, f'j/{channel}/start_round')
         payload = json.dumps({'channel': channel, 'username': username})
 
         await self._mqtt.put(topic, payload)
@@ -80,10 +86,20 @@ class Bot(b11y.B11yBase):
 
         print(f'{username} in {channel} guessed \'{guess}.\'', flush=True)
 
-        topic = 'b11y/j/guess'
+        topic = mqtt.concat_topic(self.topic_prefix, f'j/{channel}/guess')
         payload = json.dumps({'channel': channel, 'username': username, 'guess': guess})
 
         await self._mqtt.put(topic, payload)
+
+    async def mqtt_j_round_started(self, topic, payload):
+        print(f'Round started...', flush=True)
+        # TODO handle end of round
+        self.remove_topic_handler(topic)
+
+    async def mqtt_j_end_round(self, topic, payload):
+        print(f'Round ended...', flush=True)
+        # TODO handle end of round
+        self.remove_topic_handler(topic)
 
     # FIXME testing only, mod only
     async def twitch_arb_mqtt(self, ctx):
@@ -108,6 +124,7 @@ class Bot(b11y.B11yBase):
         '''
 
         payload = payload.decode('utf-8')
+        
         channel_name, author = payload.split(' ', 1)
 
         print(f'Handling {topic}, {author} in {channel_name}', flush=True)

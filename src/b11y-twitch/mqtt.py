@@ -39,8 +39,9 @@ class MQTTBridge:
         self.client.subscribe(topic)
 
     def unsubscribe(self, topic):
+        print(f'Unubscribing from MQTT topic \'{topic}\'', flush=True)
+
         if topic in self.subscriptions:
-            print(f'Unubscribing from MQTT topic \'{topic}\'', flush=True)
             self.subscriptions.remove(topic)
 
         self.client.unsubscribe(topic)
@@ -87,11 +88,5 @@ class MQTTBridge:
         else:
             self.client.connect(host, port, timeout)
 
-# TODO topic_add_prefix(topic, prefix)
-def concat_topic(prefix, topic):
-    # TODO more robust method
-    # TODO check actual format for topics
-    prefix.rstrip('/')
-    return prefix + '/' + topic
-
-# TODO topic_remove_prefix(topic, prefix)
+def concat_topic(*parts):
+    return '/'.join(part.strip('/') for part in parts)
